@@ -58,7 +58,7 @@ sub permute($input, $subset = [], $r = []) {
         push $subset->@*, $current;
         push $r->@*, [$subset->@*] unless $input->@*;
         permute($input, $subset, $r);
-        unshift $input->@*, $current;
+        splice $input->@*, $idx, 0, $current;
         pop $subset->@*;
     }
     $r
