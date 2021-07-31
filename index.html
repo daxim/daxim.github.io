@@ -19,6 +19,8 @@
         tr:nth-child(5n+1) td {border-bottom-style: solid;}
         td:nth-child(5n+1) {border-right-style: solid;}
         details {margin: 1ch;}
+        tt {background: #eee;}
+        form input[type="number"] { width: 4ch; }
     </style>
     <script src="webperl.js"></script>
     <script type="text/perl">
@@ -127,7 +129,7 @@ sub worlds_worst_pbm_parser($pbm) {
     my $format = shift @lines;
     die 'not a PBM' if 'P1' ne $format;
     my ($x, $y) = split / /, shift @lines;
-    my $linear = join '', map { s/\s//r } grep { !/^#/ } @lines;
+    my $linear = join '', map { s/\s//gr } grep { !/^#/ } @lines;
     die 'input over/underflow' if length $linear != $x * $y;
     my @r;
     for (0 .. $y - 1) {
@@ -205,6 +207,83 @@ sub filter($solutions, $T, $F) {
     } $solutions->@*]
 }
 
+sub draw($dom, $app) {
+    $dom->querySelector('#columnhints')->{value} = join "\n", map { join ' ', $_->@* } $app->{c}->@*;
+    $dom->querySelector('#rowhints')->{value} = join "\n", map { join ' ', $_->@* } $app->{r}->@*;
+    $dom->querySelector('table')->{innerHTML} = grid($app);
+    $dom->querySelectorAll('td[id]')->forEach(sub($elem, $, $) {
+        $elem->addEventListener('click', sub($ev) {
+            my $class = $ev->{target}{classList};
+            if ($class->contains('t')) {
+                $class->remove('t');
+                $class->add('f');
+            } elsif ($class->contains('f')) {
+                $class->remove('f');
+            } else {
+                $class->add('t');
+            }
+        });
+    });
+    $dom->querySelectorAll('td.rhint, td.chint')->forEach(sub($elem, $, $) {
+        $elem->addEventListener('click', sub($ev) {
+            my $t = $ev->{target}{dataset};
+            my ($length, $hints);
+            if (exists $t->{row}) {
+                $hints = $app->{r}[$t->{row}];
+                $length = $app->{c}->@*;
+            } elsif (exists $t->{col}) {
+                $hints = $app->{c}[$t->{col}];
+                $length = $app->{r}->@*;
+            } else { ... }
+            my (@T, @F);
+            if (exists $t->{row}) {
+                $dom->querySelectorAll(sprintf 'td[id^=r%uc].t', $t->{row})->forEach(sub($elem, $, $) {
+                    push @T, $elem->{id} =~ /c(\d+)/
+                });
+                $dom->querySelectorAll(sprintf 'td[id^=r%uc].f', $t->{row})->forEach(sub($elem, $, $) {
+                    push @F, $elem->{id} =~ /c(\d+)/
+                });
+            } elsif (exists $t->{col}) {
+                $dom->querySelectorAll(sprintf 'td[id$=c%u].t', $t->{col})->forEach(sub($elem, $, $) {
+                    push @T, $elem->{id} =~ /r(\d+)/
+                });
+                $dom->querySelectorAll(sprintf 'td[id$=c%u].f', $t->{col})->forEach(sub($elem, $, $) {
+                    push @F, $elem->{id} =~ /r(\d+)/
+                });
+            } else { ... }
+            my @solutions = fractions(filter(solutions($length, $hints), \@T, \@F))->@*;
+            my @scale = map {
+                scale($app->{settings}{true}, $app->{settings}{false}, $_)
+            } @solutions;
+            if (exists $t->{row}) {
+                for my $idx (0 .. @scale - 1) {
+                    my $elem = $dom->querySelector(sprintf '#r%uc%u', $t->{row}, $idx);
+                    $elem->{style}{border} = sprintf '0.2ch solid rgb(%u,%u,%u)', $scale[$idx]->@*;
+                    if ($solutions[$idx] == 1) {
+                        $elem->{classList}->remove('f');
+                        $elem->{classList}->add('t');
+                    } elsif ($solutions[$idx] == 0) {
+                        $elem->{classList}->remove('t');
+                        $elem->{classList}->add('f');
+                    }
+                }
+            } elsif (exists $t->{col}) {
+                for my $idx (0 .. @scale - 1) {
+                    my $elem = $dom->querySelector(sprintf '#r%uc%u', $idx, $t->{col});
+                    $elem->{style}{border} = sprintf '0.2ch solid rgb(%u,%u,%u)', $scale[$idx]->@*;
+                    if ($solutions[$idx] == 1) {
+                        $elem->{classList}->remove('f');
+                        $elem->{classList}->add('t');
+                    } elsif ($solutions[$idx] == 0) {
+                        $elem->{classList}->remove('t');
+                        $elem->{classList}->add('f');
+                    }
+                }
+            } else { ... }
+        });
+    });
+}
+
 my $app = {
     c => [
         [2], [2, 5], [11], [13], [1, 12], [14], [14, 1], [3, 7, 3], [19],
@@ -226,78 +305,27 @@ my $app = {
 };
 
 my $dom = js('document');
-$dom->querySelector('table')->{innerHTML} = grid($app);
-$dom->querySelectorAll('td[id]')->forEach(sub($elem, $, $) {
-    $elem->addEventListener('click', sub($ev) {
-        my $class = $ev->{target}{classList};
-        if ($class->contains('t')) {
-            $class->remove('t');
-            $class->add('f');
-        } elsif ($class->contains('f')) {
-            $class->remove('f');
-        } else {
-            $class->add('t');
-        }
-    });
+$dom->querySelector('form')->addEventListener('submit', sub($ev) {
+    $ev->preventDefault;
+    $ev->{submitter}->blur;
+    my $fieldset = $ev->{submitter}{parentElement}{children};
+    if (exists $fieldset->{width} && exists $fieldset->{height}) {
+        $app->{c} = [map {[]} 1..$fieldset->{width}{value}];
+        $app->{r} = [map {[]} 1..$fieldset->{height}{value}];
+        draw($dom, $app);
+    } elsif (exists $fieldset->{upload}) {
+        $fieldset->{upload}{files}[0]->text->then(sub($pbm) {
+            $app = { $app->%*, make_hints(worlds_worst_pbm_parser($pbm))->%* };
+            draw($dom, $app);
+        });
+    } elsif (exists $fieldset->{columnhints} && exists $fieldset->{rowhints}) {
+        $app->{c} = [map { [split / /, $_] } grep { !!$_ } split "\n", $fieldset->{columnhints}{value}];
+        $app->{r} = [map { [split / /, $_] } grep { !!$_ } split "\n", $fieldset->{rowhints}{value}];
+        draw($dom, $app);
+    } else { ... }
 });
-$dom->querySelectorAll('td.rhint, td.chint')->forEach(sub($elem, $, $) {
-    $elem->addEventListener('click', sub($ev) {
-        my $t = $ev->{target}{dataset};
-        my ($length, $hints);
-        if (exists $t->{row}) {
-            $hints = $app->{r}[$t->{row}];
-            $length = $app->{c}->@*;
-        } elsif (exists $t->{col}) {
-            $hints = $app->{c}[$t->{col}];
-            $length = $app->{r}->@*;
-        } else { ... }
-        my (@T, @F);
-        if (exists $t->{row}) {
-            $dom->querySelectorAll(sprintf 'td[id^=r%uc].t', $t->{row})->forEach(sub($elem, $, $) {
-                push @T, $elem->{id} =~ /c(\d+)/
-            });
-            $dom->querySelectorAll(sprintf 'td[id^=r%uc].f', $t->{row})->forEach(sub($elem, $, $) {
-                push @F, $elem->{id} =~ /c(\d+)/
-            });
-        } elsif (exists $t->{col}) {
-            $dom->querySelectorAll(sprintf 'td[id$=c%u].t', $t->{col})->forEach(sub($elem, $, $) {
-                push @T, $elem->{id} =~ /r(\d+)/
-            });
-            $dom->querySelectorAll(sprintf 'td[id$=c%u].f', $t->{col})->forEach(sub($elem, $, $) {
-                push @F, $elem->{id} =~ /r(\d+)/
-            });
-        } else { ... }
-        my @solutions = fractions(filter(solutions($length, $hints), \@T, \@F))->@*;
-        my @scale = map {
-            scale($app->{settings}{true}, $app->{settings}{false}, $_)
-        } @solutions;
-        if (exists $t->{row}) {
-            for my $idx (0 .. @scale - 1) {
-                my $elem = $dom->querySelector(sprintf '#r%uc%u', $t->{row}, $idx);
-                $elem->{style}{border} = sprintf '0.2ch solid rgb(%u,%u,%u)', $scale[$idx]->@*;
-                if ($solutions[$idx] == 1) {
-                    $elem->{classList}->remove('f');
-                    $elem->{classList}->add('t');
-                } elsif ($solutions[$idx] == 0) {
-                    $elem->{classList}->remove('t');
-                    $elem->{classList}->add('f');
-                }
-            }
-        } elsif (exists $t->{col}) {
-            for my $idx (0 .. @scale - 1) {
-                my $elem = $dom->querySelector(sprintf '#r%uc%u', $idx, $t->{col});
-                $elem->{style}{border} = sprintf '0.2ch solid rgb(%u,%u,%u)', $scale[$idx]->@*;
-                if ($solutions[$idx] == 1) {
-                    $elem->{classList}->remove('f');
-                    $elem->{classList}->add('t');
-                } elsif ($solutions[$idx] == 0) {
-                    $elem->{classList}->remove('t');
-                    $elem->{classList}->add('f');
-                }
-            }
-        } else { ... }
-    });
-});
+draw($dom, $app);
+
 
 =pod
 
@@ -336,6 +364,38 @@ TO DO give duskwuff the middle finger for intellectual dishonesty
       <summary>legend</summary>
     <p>Click <mark id="hints">hints row/column header</mark> to deduce.</p>
     <p>Click <mark id="cells">cells</mark> to toggle cell state through unknown, true, false.</p>
+</details>
+<details>
+    <summary>puzzle set-up</summary>
+    <form>
+        <fieldset>
+            <legend>new empty puzzle with dimensions</legend>
+            <label for="width">width</label>
+            <input type="number" min="1" id="width">
+            <label for="height">height</label>
+            <input type="number" min="1" id="height">
+            <input type="submit">
+        </fieldset>
+        <fieldset>
+            <legend>new puzzle with hints derived from black-and-white image</legend>
+            <label for="upload">
+                <a href="https://en.wikipedia.org/wiki/Netpbm#Description">PBM file</a>
+            </label>
+            <input type="file" accept=".pbm,image/x-portable-bitmap" id="upload">
+            <input type="submit">
+            <p>🛈 try <a href="https://imagemagick.org/">ImageMagick</a> command:
+            <tt>convert -compress none input.gif output.pbm</tt></p>
+        </fieldset>
+        <fieldset>
+            <legend>edit hints</legend>
+            <label for="rowhints">row hints</label>
+            <textarea cols="12" id="rowhints"></textarea>
+            <label for="columnhints">column hints</label>
+            <textarea cols="12" id="columnhints"></textarea>
+            <input type="submit">
+            <p>🛈 Separate hints with space. Separate hint groups with newline.</p>
+        </fieldset>
+    </form>
 </details>
 
 </body>
